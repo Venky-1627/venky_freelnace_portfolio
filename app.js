@@ -1,22 +1,124 @@
 // ============================================================
-// VENKY PORTFOLIO - Main Application Script
+// VENKY PORTFOLIO - Main Application Script (Supabase-powered)
 // ============================================================
 import * as THREE from 'three';
 
 // ============================================================
-// DATA LAYER (LocalStorage)
+// SUPABASE CONFIG
+// ============================================================
+const SUPABASE_URL = 'https://derjlzbzfqqpslfnudem.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRlcmpsemJ6ZnFxcHNsZm51ZGVtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA5ODAwMDQsImV4cCI6MjA5NjU1NjAwNH0.nUCoP8womA-AahcdGSEDb4lhabYYP8mhFsKh5znN00k';
+const BUCKET_NAME = 'project-images';
+let supabase = null;
+
+function initSupabase() {
+  if (supabase) return supabase;
+  if (window.supabase && window.supabase.createClient) {
+    supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  }
+  return supabase;
+}
+
+// ============================================================
+// DATA LAYER (Supabase + localStorage cache)
 // ============================================================
 const STORAGE_KEY = 'venky_portfolio_works_v1';
 const ADMIN_SESSION_KEY = 'venky_admin_session';
 const ADMIN_CREDS = { user: 'admin', pass: 'venky2026' };
 
-function getWorks() {
+function getCachedWorks() {
   try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'); }
   catch (e) { return []; }
 }
-function saveWorks(works) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(works));
+function setCachedWorks(works) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(works)); }
+  catch (e) { /* quota exceeded - non-fatal */ }
 }
+
+function normalizeWork(w) {
+  return {
+    id: w.id,
+    title: w.title || 'Untitled',
+    category: w.category || 'Other',
+    desc: w.description || '',
+    url: w.live_url || '',
+    image: w.image_url || null,
+    createdAt: w.created_at ? new Date(w.created_at).getTime() : Date.now()
+  };
+}
+
+async function fetchWorks() {
+  const sb = initSupabase();
+  if (!sb) return getCachedWorks();
+  try {
+    const { data, error } = await sb
+      .from('works')
+      .select('*')
+      .order('display_order', { ascending: true })
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+    const works = (data || []).map(normalizeWork);
+    setCachedWorks(works);
+    return works;
+  } catch (e) {
+    console.error('fetchWorks error:', e);
+    return getCachedWorks();
+  }
+}
+
+async function createWorkInDb(work) {
+  const sb = initSupabase();
+  if (!sb) return null;
+  const dbWork = {
+    title: work.title,
+    description: work.desc || '',
+    image_url: work.image || null,
+    live_url: work.url || null,
+    category: work.category
+  };
+  const { data, error } = await sb.from('works').insert([dbWork]).select().single();
+  if (error) { console.error('createWork error:', error); return null; }
+  return data;
+}
+
+async function updateWorkInDb(id, work) {
+  const sb = initSupabase();
+  if (!sb) return null;
+  const dbWork = {
+    title: work.title,
+    description: work.desc || '',
+    image_url: work.image || null,
+    live_url: work.url || null,
+    category: work.category
+  };
+  const { data, error } = await sb.from('works').update(dbWork).eq('id', id).select().single();
+  if (error) { console.error('updateWork error:', error); return null; }
+  return data;
+}
+
+async function deleteWorkFromDb(id) {
+  const sb = initSupabase();
+  if (!sb) return false;
+  const { error } = await sb.from('works').delete().eq('id', id);
+  if (error) { console.error('deleteWork error:', error); return false; }
+  return true;
+}
+
+async function uploadImageToStorage(file) {
+  const sb = initSupabase();
+  if (!sb) return null;
+  const ext = (file.name.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const fileName = `work_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.${ext}`;
+  const { error } = await sb.storage.from(BUCKET_NAME).upload(fileName, file, {
+    cacheControl: '3600',
+    upsert: false,
+    contentType: file.type || 'image/jpeg'
+  });
+  if (error) { console.error('upload error:', error); return null; }
+  const { data: { publicUrl } } = sb.storage.from(BUCKET_NAME).getPublicUrl(fileName);
+  return publicUrl;
+}
+
 function isAdminLoggedIn() {
   return localStorage.getItem(ADMIN_SESSION_KEY) === 'true';
 }
@@ -219,6 +321,10 @@ const pages = {
       <div class="admin-layout">
         <aside class="admin-sidebar">
           <div class="admin-logo gradient-text">Venky Admin</div>
+          <div class="admin-cloud-badge" title="Backed by Supabase — works across all devices">
+            <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#3ecf8e;box-shadow:0 0 8px #3ecf8e;animation:wa-pulse 2.4s ease-in-out infinite"></span>
+            <span style="font-size:.75rem;color:var(--text-muted);margin-left:.4rem">Cloud sync active</span>
+          </div>
           <nav class="admin-nav">
             <a class="active" data-tab="works" onclick="adminTab('works')">📁 My Works</a>
             <a data-tab="add" onclick="adminTab('add')">➕ Add New Work</a>
@@ -306,6 +412,7 @@ function showPage(pageId) {
     if (!isAdminLoggedIn()) { showPage('admin-login'); return; }
     root.innerHTML = pages.adminDashboard();
     renderAdminWorks();
+    checkMigration();
   }
   window.scrollTo(0, 0);
 }
@@ -337,17 +444,31 @@ function getCategoryEmoji(cat) {
   return map[cat] || '💻';
 }
 
-function renderPortfolioWorks() {
+async function renderPortfolioWorks() {
   const grid = document.getElementById('work-grid');
   const empty = document.getElementById('work-empty');
   if (!grid) return;
-  const works = getWorks();
-  grid.innerHTML = '';
+  // Show cached works immediately for instant render
+  const cached = getCachedWorks();
+  if (cached.length > 0) {
+    renderWorksIntoGrid(grid, cached);
+    if (empty) empty.style.display = 'none';
+  } else {
+    grid.innerHTML = '<div class="loading-skeleton" style="grid-column:1/-1;text-align:center;padding:3rem;color:var(--text-muted);font-size:.9rem">Loading projects...</div>';
+  }
+  // Fetch fresh from Supabase
+  const works = await fetchWorks();
   if (works.length === 0) {
+    grid.innerHTML = '';
     if (empty) empty.style.display = 'block';
     return;
   }
   if (empty) empty.style.display = 'none';
+  renderWorksIntoGrid(grid, works);
+}
+
+function renderWorksIntoGrid(grid, works) {
+  grid.innerHTML = '';
   const pEl = document.getElementById('stat-projects');
   const cEl = document.getElementById('stat-clients');
   if (pEl) pEl.textContent = Math.max(50, works.length) + '+';
@@ -357,7 +478,7 @@ function renderPortfolioWorks() {
     card.className = 'work-card';
     card.style.animation = `fadeInUp .6s var(--trans) ${idx * 0.08}s both`;
     card.onclick = () => { if (w.url) window.open(w.url, '_blank'); };
-    const imgHTML = w.image ? `<img src="${w.image}" alt="${escapeHtml(w.title)}">` : getCategoryEmoji(w.category);
+    const imgHTML = w.image ? `<img src="${w.image}" alt="${escapeHtml(w.title)}" loading="lazy">` : getCategoryEmoji(w.category);
     card.innerHTML = `<div class="work-image">${imgHTML}</div><div class="work-info"><span class="work-tag">${escapeHtml(w.category)}</span><h3>${escapeHtml(w.title)}</h3><p>${escapeHtml(w.desc || 'Full-stack project delivered with modern technologies.')}</p></div>`;
     grid.appendChild(card);
   });
@@ -414,11 +535,12 @@ function adminTab(tabName) {
   if (tabName === 'works') renderAdminWorks();
 }
 
-function renderAdminWorks() {
+async function renderAdminWorks() {
   const list = document.getElementById('admin-work-list');
   const empty = document.getElementById('admin-empty');
   if (!list) return;
-  const works = getWorks();
+  list.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--text-muted)">Loading from Supabase...</div>';
+  const works = await fetchWorks();
   list.innerHTML = '';
   if (works.length === 0) {
     if (empty) empty.style.display = 'block';
@@ -434,7 +556,41 @@ function renderAdminWorks() {
   });
 }
 
+// One-time migration: if localStorage has works but Supabase is empty, offer to migrate
+async function checkMigration() {
+  const localWorks = getCachedWorks();
+  if (localWorks.length === 0) return;
+  // Suppress migration if works already have UUID-format IDs (already migrated)
+  if (localWorks[0].id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(localWorks[0].id)) return;
+  const freshWorks = await fetchWorks();
+  if (freshWorks.length > 0) return; // DB already has data
+  const banner = document.createElement('div');
+  banner.style.cssText = 'position:fixed;bottom:1.5rem;left:1.5rem;right:1.5rem;max-width:480px;margin:0 auto;background:var(--bg-elevated);border:1px solid var(--border);border-radius:12px;padding:1rem 1.25rem;z-index:10000;box-shadow:0 10px 40px #0008;display:flex;align-items:center;gap:1rem;flex-wrap:wrap';
+  banner.innerHTML = `
+    <div style="flex:1;min-width:200px">
+      <div style="font-weight:600;margin-bottom:.25rem">Migrate local projects?</div>
+      <div style="font-size:.85rem;color:var(--text-secondary)">Found ${localWorks.length} work${localWorks.length===1?'':'s'} in browser storage. Move them to the cloud?</div>
+    </div>
+    <button class="btn btn-primary btn-sm" id="migrate-yes">Migrate</button>
+    <button class="btn btn-glass btn-sm" id="migrate-no">Skip</button>
+  `;
+  document.body.appendChild(banner);
+  document.getElementById('migrate-yes').onclick = async () => {
+    banner.querySelector('div').innerHTML = '<div style="font-weight:600">Migrating...</div><div style="font-size:.85rem;color:var(--text-secondary)">Uploading to Supabase</div>';
+    let ok = 0, fail = 0;
+    for (const w of localWorks) {
+      const result = await createWorkInDb(w);
+      if (result) ok++; else fail++;
+    }
+    banner.remove();
+    showToast(`Migrated ${ok} work${ok===1?'':'s'}${fail ? ` (${fail} failed)` : ''}`, fail ? 'error' : 'success');
+    renderAdminWorks();
+  };
+  document.getElementById('migrate-no').onclick = () => banner.remove();
+}
+
 let currentImageData = null;
+let currentImageFile = null;
 function previewImage(event) {
   const file = event.target.files[0];
   if (!file) return;
@@ -446,13 +602,14 @@ function previewImage(event) {
   const reader = new FileReader();
   reader.onload = (e) => {
     currentImageData = e.target.result;
+    currentImageFile = file;
     const preview = document.getElementById('work-preview');
     if (preview) { preview.src = currentImageData; preview.style.display = 'block'; }
   };
   reader.readAsDataURL(file);
 }
 
-function saveWork(event) {
+async function saveWork(event) {
   event.preventDefault();
   const id = document.getElementById('work-id').value;
   const title = document.getElementById('work-title').value.trim();
@@ -460,23 +617,44 @@ function saveWork(event) {
   const desc = document.getElementById('work-desc').value.trim();
   const url = document.getElementById('work-url').value.trim();
   if (!title || !category) { showToast('Title and category are required', 'error'); return false; }
-  const works = getWorks();
-  if (id) {
-    const idx = works.findIndex(w => w.id === id);
-    if (idx >= 0) {
-      works[idx] = { ...works[idx], title, category, desc, url, image: currentImageData || works[idx].image };
+
+  const btn = document.getElementById('submit-btn');
+  btn.disabled = true;
+  btn.textContent = 'Saving...';
+
+  try {
+    // Upload new image to Supabase Storage if user picked a new one
+    let imageUrl = currentImageData;
+    if (currentImageFile) {
+      btn.textContent = 'Uploading image...';
+      const uploaded = await uploadImageToStorage(currentImageFile);
+      if (uploaded) imageUrl = uploaded;
     }
-    showToast('Work updated successfully!', 'success');
-  } else {
-    works.unshift({
-      id: 'work_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
-      title, category, desc, url, image: currentImageData, createdAt: Date.now()
-    });
-    showToast('Work published to portfolio!', 'success');
+
+    const work = { title, category, desc, url, image: imageUrl };
+
+    if (id) {
+      btn.textContent = 'Updating...';
+      const result = await updateWorkInDb(id, work);
+      if (result) showToast('Work updated! Live everywhere in ~1s', 'success');
+      else showToast('Update failed', 'error');
+    } else {
+      btn.textContent = 'Publishing...';
+      const result = await createWorkInDb(work);
+      if (result) showToast('Work published! Live everywhere in ~1s', 'success');
+      else showToast('Publish failed', 'error');
+    }
+    // Refresh cache + UI
+    await fetchWorks();
+    resetForm();
+    adminTab('works');
+  } catch (e) {
+    console.error(e);
+    showToast('Error: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = id ? 'Update Work' : 'Publish Work';
   }
-  saveWorks(works);
-  resetForm();
-  adminTab('works');
   return false;
 }
 
@@ -488,41 +666,47 @@ function resetForm() {
   const preview = document.getElementById('work-preview');
   if (preview) preview.style.display = 'none';
   currentImageData = null;
+  currentImageFile = null;
   const fileInput = document.getElementById('work-image-input');
   if (fileInput) fileInput.value = '';
   const titleEl = document.getElementById('form-title');
   if (titleEl) titleEl.textContent = 'Add New Work';
   const btn = document.getElementById('submit-btn');
-  if (btn) btn.textContent = 'Publish Work';
+  if (btn) { btn.textContent = 'Publish Work'; btn.disabled = false; }
 }
 
 function editWork(id) {
-  const works = getWorks();
-  const w = works.find(x => x.id === id);
-  if (!w) return;
-  document.getElementById('work-id').value = w.id;
-  document.getElementById('work-title').value = w.title;
-  document.getElementById('work-category').value = w.category;
-  document.getElementById('work-desc').value = w.desc || '';
-  document.getElementById('work-url').value = w.url || '';
-  currentImageData = w.image || null;
-  if (w.image) {
-    const preview = document.getElementById('work-preview');
-    preview.src = w.image;
-    preview.style.display = 'block';
-  }
-  document.getElementById('form-title').textContent = 'Edit Work';
-  document.getElementById('submit-btn').textContent = 'Update Work';
-  adminTab('add');
+  fetchWorks().then(works => {
+    const w = works.find(x => x.id === id);
+    if (!w) { showToast('Work not found', 'error'); return; }
+    document.getElementById('work-id').value = w.id;
+    document.getElementById('work-title').value = w.title;
+    document.getElementById('work-category').value = w.category;
+    document.getElementById('work-desc').value = w.desc || '';
+    document.getElementById('work-url').value = w.url || '';
+    currentImageData = w.image || null;
+    currentImageFile = null;
+    if (w.image) {
+      const preview = document.getElementById('work-preview');
+      preview.src = w.image;
+      preview.style.display = 'block';
+    }
+    document.getElementById('form-title').textContent = 'Edit Work';
+    document.getElementById('submit-btn').textContent = 'Update Work';
+    adminTab('add');
+  });
 }
 
-function deleteWork(id) {
+async function deleteWork(id) {
   if (!confirm('Delete this work? This cannot be undone.')) return;
-  let works = getWorks();
-  works = works.filter(w => w.id !== id);
-  saveWorks(works);
-  renderAdminWorks();
-  showToast('Work deleted', 'success');
+  const ok = await deleteWorkFromDb(id);
+  if (ok) {
+    showToast('Work deleted', 'success');
+    await fetchWorks();
+    renderAdminWorks();
+  } else {
+    showToast('Delete failed', 'error');
+  }
 }
 
 // ============================================================
