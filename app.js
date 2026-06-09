@@ -310,7 +310,7 @@ const pages = {
           <div class="form-group"><label>Username</label><input type="text" id="login-user" placeholder="admin" autocomplete="username"></div>
           <div class="form-group"><label>Password</label><input type="password" id="login-pass" placeholder="••••••••" autocomplete="current-password" onkeydown="if(event.key==='Enter') adminLogin()"></div>
           <button class="btn btn-primary" style="width:100%;justify-content:center" onclick="adminLogin()">Sign In</button>
-          <p style="text-align:center;margin-top:1.5rem;font-size:.8rem;color:var(--text-muted)">Default: <code style="background:#ffffff10;padding:2px 6px;border-radius:4px">admin</code> / <code style="background:#ffffff10;padding:2px 6px;border-radius:4px">venky2026</code></p>
+          <p style="text-align:center;margin-top:1.5rem;font-size:.75rem;color:var(--text-muted)">🔒 Authorized access only</p>
         </div>
       </div>
     </div>`;
