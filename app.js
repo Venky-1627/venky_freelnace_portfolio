@@ -216,7 +216,10 @@ const pages = {
       <nav class="nav" id="nav">
         <div class="nav-inner">
           <div class="nav-logo gradient-text" onclick="scrollToTop()">Venky</div>
-          <div class="nav-links">
+          <button class="nav-toggle" id="nav-toggle" type="button" aria-label="Toggle menu" aria-expanded="false">
+            <span></span><span></span><span></span>
+          </button>
+          <div class="nav-links" id="nav-links">
             <a onclick="scrollToSection('hero')">Home</a>
             <a onclick="scrollToSection('services')">Services</a>
             <a onclick="scrollToSection('work')">Work</a>
@@ -396,6 +399,7 @@ function showPage(pageId) {
     root.innerHTML = pages.portfolio();
     renderPortfolioWorks();
     attachMagneticEffects();
+    initMobileNav();
     const nav = document.getElementById('nav');
     if (nav) {
       window.addEventListener('scroll', () => {
@@ -415,6 +419,46 @@ function showPage(pageId) {
     checkMigration();
   }
   window.scrollTo(0, 0);
+}
+
+// ============================================================
+// MOBILE NAV TOGGLE
+// ============================================================
+function initMobileNav() {
+  const toggle = document.getElementById('nav-toggle');
+  const links = document.getElementById('nav-links');
+  if (!toggle || !links) return;
+
+  const closeMenu = () => {
+    toggle.classList.remove('open');
+    links.classList.remove('open');
+    toggle.setAttribute('aria-expanded', 'false');
+  };
+
+  toggle.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const isOpen = links.classList.toggle('open');
+    toggle.classList.toggle('open', isOpen);
+    toggle.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+  });
+
+  // Close menu when a nav link is tapped
+  links.querySelectorAll('a').forEach((a) => {
+    a.addEventListener('click', closeMenu);
+  });
+
+  // Close menu when clicking outside
+  document.addEventListener('click', (e) => {
+    if (!links.classList.contains('open')) return;
+    if (e.target === toggle || toggle.contains(e.target)) return;
+    if (links.contains(e.target)) return;
+    closeMenu();
+  });
+
+  // Close menu on resize back to desktop
+  window.addEventListener('resize', () => {
+    if (window.innerWidth > 768) closeMenu();
+  });
 }
 
 function scrollToTop() { window.scrollTo({ top: 0, behavior: 'smooth' }); }
